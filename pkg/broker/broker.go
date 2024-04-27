@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gilwong00/message-broker/pkg/message"
 	"github.com/gilwong00/message-broker/pkg/subscriber"
 )
 
@@ -14,12 +15,14 @@ type Broker struct {
 	mutex       sync.Mutex
 }
 
+// NewBroker creates a new instance of the in-memory broker.
 func NewBroker() *Broker {
 	return &Broker{
 		subscribers: make(map[string][]*subscriber.Subscriber),
 	}
 }
 
+// Subscribe allows a client to subscribe to a topic and receive messages.
 func (b *Broker) Subscribe(topic string) *subscriber.Subscriber {
 	// to guarantee exclusive access to the subscribers map
 	// we want to lock access to each per each request. This prevents multiple
@@ -34,10 +37,11 @@ func (b *Broker) Subscribe(topic string) *subscriber.Subscriber {
 	return subscriber
 }
 
-func (b *Broker) Unsubscribe(topic string, subscriber *subscriber.Subscriber) error {
+// Unsubscribe removes a subscriber from a topic.
+func (b *Broker) Unsubscribe(topic string, subscriber *subscriber.Subscriber) {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
-	if subscribers, ok := b.subscribers[topic]; ok {
+	if subscribers, found := b.subscribers[topic]; found {
 		for i, sub := range subscribers {
 			if sub == subscriber {
 				// closing channel
@@ -45,27 +49,26 @@ func (b *Broker) Unsubscribe(topic string, subscriber *subscriber.Subscriber) er
 				// in receiving messages.
 				close(sub.Channel)
 				// removing subscriber from slice
-				b.subscribers[topic] = append(subscribers[:i], subscribers[:i+1]...)
-				return nil
+				b.subscribers[topic] = append(subscribers[:i], subscribers[i+1:]...)
+				return
 			}
 		}
-		return nil
 	}
-	return fmt.Errorf("topic does not exist, %s", topic)
 }
 
-func (b *Broker) Publish(topic string, message interface{}) {
+// Publish sends a message to all subscribers to the specifed topic.
+func (b *Broker) Publish(msg *message.Message) {
 	// lock the mutex to safely access the subscribers map
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
-	if subscribers, ok := b.subscribers[topic]; ok {
+	if subscribers, ok := b.subscribers[msg.Topic]; ok {
 		for _, sub := range subscribers {
 			select {
-			case sub.Channel <- message:
-			// If a subscriber is slow to receive the message (after 1 second here), consider it unresponsive and unsubscribe it from the topic.
+			case sub.Channel <- msg.Payload:
+				// If a subscriber is slow to receive the message (after 1 second here), consider it unresponsive and unsubscribe it from the topic.
 			case <-time.After(time.Second):
-				fmt.Printf("Slow subscription. Unsubscribing from topic: %s\n", topic)
-				b.Unsubscribe(topic, sub)
+				fmt.Printf("Subscriber slow. Unsubscribing from topic: %s\n", msg.Topic)
+				b.Unsubscribe(msg.Topic, sub)
 			}
 		}
 	}
